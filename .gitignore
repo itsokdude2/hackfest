@@ -1,0 +1,33 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Build artifacts
+dist/
+build/
+
+# Environment files and credentials (CRITICAL: DO NOT COMMIT)
+.env
+.env.local
+.env.*.local
+*.local
+final-seed.js
+service_accounts.json
+service-account*.json
+*.pem
+*.key
+credentials*.json
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.log
+
+# Editor / OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

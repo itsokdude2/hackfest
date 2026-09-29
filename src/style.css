@@ -1,0 +1,185 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Custom Scrollbar */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.05);
+  border-radius: 3px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: #c7c7cc;
+  border-radius: 3px;
+  transition: background 0.2s;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #a1a1aa;
+}
+
+/* For Firefox */
+.custom-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: #c7c7cc rgba(0, 0, 0, 0.05);
+}
+
+/* Crisp Typography & Subpixel Font Rendering */
+html, body {
+  margin: 0;
+  padding: 0;
+  font-family: 'Outfit', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: subpixel-antialiased;
+  -moz-osx-font-smoothing: auto;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  color: #1e293b;
+  background-color: #f8fafc;
+}
+
+/* Ensure crisp contrast across all text elements */
+h1, h2, h3, h4, h5, h6, p, span, div, button, input, select, textarea, th, td {
+  -webkit-font-smoothing: subpixel-antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* --- STACKER 3D GAME CSS --- */
+:root {
+  --block-height: 40px;
+}
+
+.isometric-scene {
+  transform-style: preserve-3d;
+  width: 0;
+  height: 0;
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  /* Rotations applied in JS */
+}
+
+.cube {
+  position: absolute;
+  transform-style: preserve-3d;
+  will-change: transform;
+}
+
+.cube-face {
+  position: absolute;
+  box-sizing: border-box;
+  /* Ensure no gaps by using slightly larger dimensions or outline */
+  width: 100%;
+  height: 100%;
+  background-color: currentColor;
+  /* Use backface-visibility: visible (default) so we can see inside faces if needed,
+     though for a solid cube we usually want hidden.
+     However, due to rotation directions, we might be looking at the 'back' of a div.
+     Safest to keep it visible unless we are optimizing a massive scene. */
+  backface-visibility: visible;
+}
+
+/* Top Face - Lid */
+.cube-top {
+  width: 100%;
+  height: 100%;
+  transform: translateZ(var(--block-height));
+  /* Highlight */
+  background-image: linear-gradient(rgba(255,255,255,0.15), rgba(255,255,255,0.15));
+}
+
+/* South Face (Front, Y+) */
+/* Anchor at Bottom Edge (Y=100%) of the base square */
+.cube-south {
+  width: 100%;
+  height: var(--block-height);
+  transform-origin: top;
+  top: 100%;
+  left: 0;
+  /* Rotate X 90deg makes it stand up pointing to +Z */
+  transform: rotateX(-90deg);
+  /* Wait, if I rotateX(-90), the normal points Y+. Correct. */
+  /* But the face goes to Z- (down). */
+  /* We want it to go Z+ (up). */
+  /* So we must use rotateX(90deg). Normal points -Y (backwards). */
+  /* This is why backface-visibility: hidden killed it. */
+  transform: rotateX(90deg);
+
+  /* Shadow */
+  background-image: linear-gradient(rgba(0,0,0,0.1), rgba(0,0,0,0.1));
+}
+
+/* East Face (Side, X+) */
+/* Anchor at Right Edge (X=100%) of the base square */
+.cube-east {
+  width: var(--block-height);
+  height: 100%;
+  transform-origin: left;
+  top: 0;
+  left: 100%;
+  /* Rotate Y -90deg makes it stand up pointing to +Z? */
+  /* RotateY(90) -> Normal +X -> folds "back" to -Z. */
+  /* RotateY(-90) -> Normal -X -> folds "front" to +Z? */
+  /* Let's trace: Normal starts Z+. */
+  /* RotateY(90): Z+ -> X+. Normal X+. Geometry lies in YZ plane. */
+  /* But we want geometry to go UP (Z+). */
+  /* If origin is Left (X=0 of face). */
+  /* Position is Left: 100% (X=Width of base). */
+  /* We want it to span Z=0 to Z=H. */
+  /* RotateY(-90) turns X axis to Z axis? */
+  /* X -> Z. */
+  /* So width (X) becomes Height (Z). */
+  /* Yes. */
+  /* Normal? Z+ -> -X. */
+  /* We look from -X? No we look from -X, -Y, +Z area? */
+  /* Camera is rotateZ(45). We look at corner between South and East. */
+  /* So we see South Face and East Face. */
+  /* South Face Normal should point Y+ ? No. */
+  /* If block is at (0,0). Camera is at (large, large, large). */
+  /* Wait, camera transform is `rotateX(60) rotateZ(45) translateZ(...)`. */
+  /* This is a "look down" camera. */
+  /* Scene is rotated. */
+  /* Effectively we are looking from South-East. */
+  /* So we need South Face (Y+) and East Face (X+). */
+  /* Their normals should point Y+ and X+. */
+  /* My transforms: */
+  /* South: rotateX(90). Normal -Y. (Backwards). */
+  /* East: rotateY(-90). Normal -X. (Backwards). */
+  /* So we are looking at the BACK of these faces. */
+  /* With backface-visibility: hidden, they vanish. */
+  /* With backface-visibility: visible, we see them (as long as color is solid). */
+
+  transform: rotateY(-90deg);
+
+  /* Darker Shadow */
+  background-image: linear-gradient(rgba(0,0,0,0.2), rgba(0,0,0,0.2));
+}
+
+
+/* Falling Animation */
+@keyframes fall {
+    0% { transform: translate3d(var(--tx), var(--ty), var(--tz)); opacity: 1; }
+    100% { transform: translate3d(var(--tx), var(--ty), -800px) rotateZ(45deg); opacity: 0; }
+}
+
+.falling-animation {
+    animation: fall 0.8s ease-in forwards;
+    pointer-events: none;
+}
+
+/* Mobile Optimizations */
+@media (max-width: 768px) {
+  body, html {
+    overflow: hidden; /* Prevent scroll on game */
+    height: 100%;
+  }
+
+  #root {
+    height: 100%;
+    overflow: hidden;
+  }
+}

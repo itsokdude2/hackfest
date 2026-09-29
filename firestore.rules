@@ -1,0 +1,322 @@
+rules_version = '2'; 
+service cloud.firestore { 
+  match /databases/{database}/documents { 
+ 
+    // --- 1. CORE AUTH HELPERS --- 
+    function isAuthenticated() { 
+      return request.auth != null; 
+    } 
+ 
+    function isUserEmail(email) { 
+      return isAuthenticated() &&  
+             request.auth.token.email.lower() == email.lower(); 
+    } 
+ 
+    function isAdmin() { 
+      return isAuthenticated() && request.auth.token.email in [ 
+        'nikhil080905@gmail.com' 
+      ]; 
+    } 
+    
+    // --- 2. SECURE ROLE VERIFICATION ---
+    function getAuthProfile() {
+        return get(/databases/$(database)/documents/auth_profiles/$(request.auth.uid)).data;
+    }
+    
+    function hasAuthProfile() {
+        return isAuthenticated() && exists(/databases/$(database)/documents/auth_profiles/$(request.auth.uid));
+    }
+    
+    function isJuryOrHelper() {
+        return hasAuthProfile()
+               && (getAuthProfile().role == 'jury' || getAuthProfile().role == 'helper');
+    }
+    
+    // Check if the user is the leader of the team (using email from team doc)
+    function isTeamLeader(teamId) {
+        return isAuthenticated() 
+               && get(/databases/$(database)/documents/teams/$(teamId)).data.leaderEmail == request.auth.token.email;
+    }
+
+    // --- 3. JURY VERIFICATION --- 
+    function verifyJuryWithId(docId, email, requireExtra) { 
+       let userPath = /databases/$(database)/documents/users/$(docId); 
+       let u = exists(userPath) ? get(userPath).data : null; 
+       return u != null  
+              && u.email.lower() == request.auth.token.email.lower() 
+              && email.lower() == request.auth.token.email.lower() 
+              && u.role == 'jury' 
+              && u.get('isExtraJury', false) == requireExtra; 
+    } 
+    
+    function isExtraJury() {
+         return hasAuthProfile()
+               && getAuthProfile().get('isExtraJury', false) == true;
+    }
+
+    function isTeamFinalist(teamId) {
+        let pData = exists(/databases/$(database)/documents/private_team_data/$(teamId)) 
+          ? get(/databases/$(database)/documents/private_team_data/$(teamId)).data 
+          : {};
+        return pData.get('isFinalist', false);
+    }
+ 
+    function isValidStandardEvaluation(teamId, round) { 
+      return (round != 'phase3') || (isTeamFinalist(teamId) == true); 
+    } 
+ 
+    function isValidExtraEvaluation(teamId) { 
+      return isTeamFinalist(teamId) == false; 
+    } 
+
+    // --- COLLECTION RULES --- 
+
+    match /system/{document=**} { 
+      allow read: if isAuthenticated(); 
+      allow write: if isAdmin(); 
+    } 
+    
+    // NEW: Auth Profiles (Securely linked to Users via Email Check)
+    match /auth_profiles/{uid} {
+        allow read: if request.auth.uid == uid;
+        // Allow write ONLY if the referenced user doc's email matches the auth email
+        // request.resource.data must contain { customId: '...', role: '...' }
+        allow write: if request.auth.uid == uid
+                     && exists(/databases/$(database)/documents/users/$(request.resource.data.customId))
+                     && get(/databases/$(database)/documents/users/$(request.resource.data.customId)).data.email == request.auth.token.email
+                     && get(/databases/$(database)/documents/users/$(request.resource.data.customId)).data.role == request.resource.data.role;
+    }
+
+    match /users/{userId} { 
+      allow read: if isAdmin() 
+                  || isUserEmail(resource.data.email)
+                  || isJuryOrHelper(); // Juries/Helpers can read user lists
+                  
+      allow create: if isUserEmail(request.resource.data.email); 
+      allow update: if isUserEmail(resource.data.email) || isAdmin(); 
+      allow delete: if isAdmin(); 
+    } 
+match /teams/{teamId} { 
+      // Strict Isolation
+      allow read: if isAdmin() 
+                  || isJuryOrHelper()
+                  || isTeamLeader(teamId); 
+                  
+      allow create, delete: if isAdmin(); 
+      
+      // RESTRICTED UPDATE
+      allow update: if isAdmin() 
+                    // Juries/Helpers can update status/flags
+                    || (isJuryOrHelper()) 
+                    // Team Leaders can update:
+                    || (isTeamLeader(teamId) 
+                        // 1. Prevent changing the Track
+                        && request.resource.data.get('track', '') == resource.data.get('track', '')
+                        // 2. Prevent changing Finalist status
+                        && request.resource.data.get('isFinalist', false) == resource.data.get('isFinalist', false)
+                        // 3. Prevent changing Phase 3 Eval flag
+                        && request.resource.data.get('phase3Evaluated', false) == resource.data.get('phase3Evaluated', false)
+                        // 4. *** FIX: Allow status to change ONLY to 'ready' (or stay the same) ***
+                        && (
+                           request.resource.data.status == resource.data.status || 
+                           request.resource.data.status == 'ready'
+                        )
+                       ); 
+    }
+    
+    // PRIVATE TEAM DATA (Admin + Jury Only) - NO CONTESTANT ACCESS
+    match /private_team_data/{teamId} {
+        allow read: if isAdmin() || isJuryOrHelper();
+        allow write: if isAdmin() || isJuryOrHelper(); // Allow Juries to increment counts
+    }
+ 
+    match /evaluations/{evalId} { 
+      allow read: if isAdmin() || isUserEmail(resource.data.juryEmail); 
+      allow create: if "juryId" in request.resource.data  
+                    && verifyJuryWithId(request.resource.data.juryId, request.resource.data.juryEmail, false) 
+                    && isValidStandardEvaluation(request.resource.data.teamId, request.resource.data.round); 
+      allow update: if isUserEmail(resource.data.juryEmail) || isAdmin(); 
+    } 
+ 
+    match /extra_jury_evaluations/{evalId} { 
+      allow read: if isAdmin() || isUserEmail(resource.data.juryEmail); 
+      allow create: if "juryId" in request.resource.data  
+                    && verifyJuryWithId(request.resource.data.juryId, request.resource.data.juryEmail, true) 
+                    && isValidExtraEvaluation(request.resource.data.teamId); 
+      allow update: if (isUserEmail(resource.data.juryEmail) && isExtraJury()) || isAdmin(); 
+    } 
+ 
+    match /jury_notes/{noteId} { 
+      allow read: if isAdmin() || isUserEmail(resource.data.juryEmail); 
+      allow create: if isUserEmail(request.resource.data.juryEmail);  
+      allow update, delete: if isUserEmail(resource.data.juryEmail) || isAdmin(); 
+    } 
+ 
+    match /feedback/{feedbackId} { 
+      allow create: if isAuthenticated(); 
+      allow read: if isAdmin(); 
+    } 
+ 
+    match /notifications/{notifId} { 
+      allow read: if isAuthenticated(); 
+      allow create: if isUserEmail(request.resource.data.createdBy) || isAdmin(); 
+    } 
+ 
+    match /logs/{logId} {  
+      allow create: if isAuthenticated();  
+      allow read: if isAdmin();  
+    } 
+    match /checkins/{checkinId} {  
+      allow create: if isAuthenticated();  
+      allow read: if isAuthenticated();  
+    } 
+    match /help_requests/{requestId} {  
+      allow create: if isAuthenticated(); 
+      allow read, update: if isAuthenticated();  
+    } 
+    match /arcade_scores/{gameId}/scores/{email} { 
+      allow read: if isAuthenticated(); 
+      allow write: if isUserEmail(email); 
+    } 
+  } 
+}        return isAuthenticated()
+               && get(/databases/$(database)/documents/teams/$(teamId)).data.leaderEmail == request.auth.token.email;
+    }
+
+    // --- 3. JURY VERIFICATION ---
+    function verifyJuryWithId(docId, email, requireExtra) {
+       let userPath = /databases/$(database)/documents/users/$(docId);
+       let u = exists(userPath) ? get(userPath).data : null;
+       return u != null
+              && u.email.lower() == request.auth.token.email.lower()
+              && email.lower() == request.auth.token.email.lower()
+              && u.role == 'jury'
+              && u.get('isExtraJury', false) == requireExtra;
+    }
+
+    function isExtraJury() {
+         return hasAuthProfile()
+               && getAuthProfile().get('isExtraJury', false) == true;
+    }
+
+    function isTeamFinalist(teamId) {
+        let pData = exists(/databases/$(database)/documents/private_team_data/$(teamId))
+          ? get(/databases/$(database)/documents/private_team_data/$(teamId)).data
+          : {};
+        return pData.get('isFinalist', false);
+    }
+
+    function isValidStandardEvaluation(teamId, round) {
+      return (round != 'phase3') || (isTeamFinalist(teamId) == true);
+    }
+
+    function isValidExtraEvaluation(teamId) {
+      return isTeamFinalist(teamId) == false;
+    }
+
+    // --- COLLECTION RULES ---
+
+    match /system/{document=**} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    // NEW: Auth Profiles (Securely linked to Users via Email Check)
+    match /auth_profiles/{uid} {
+        allow read: if request.auth.uid == uid;
+        // Allow write ONLY if the referenced user doc's email matches the auth email
+        // request.resource.data must contain { customId: '...', role: '...' }
+        allow write: if request.auth.uid == uid
+                     && exists(/databases/$(database)/documents/users/$(request.resource.data.customId))
+                     && get(/databases/$(database)/documents/users/$(request.resource.data.customId)).data.email == request.auth.token.email
+                     && get(/databases/$(database)/documents/users/$(request.resource.data.customId)).data.role == request.resource.data.role;
+    }
+
+    match /users/{userId} {
+      allow read: if isAdmin()
+                  || isUserEmail(resource.data.email)
+                  || isJuryOrHelper(); // Juries/Helpers can read user lists
+
+      allow create: if isUserEmail(request.resource.data.email);
+      allow update: if isUserEmail(resource.data.email) || isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    match /teams/{teamId} {
+      // Strict Isolation
+      allow read: if isAdmin()
+                  || isJuryOrHelper()
+                  || isTeamLeader(teamId);
+
+      allow create, delete: if isAdmin();
+
+      // RESTRICTED UPDATE
+      allow update: if isAdmin()
+                    // Juries/Helpers can update status/flags
+                    || (isJuryOrHelper())
+                    // Team Leaders can update but NOT critical fields
+                    || (isTeamLeader(teamId)
+                        && request.resource.data.get('track', '') == resource.data.get('track', '')
+                        && request.resource.data.get('isFinalist', false) == resource.data.get('isFinalist', false) // shouldn't exist anyway but good practice
+                        && request.resource.data.get('status', '') == resource.data.get('status', '')
+                        // Prevent touching evaluation flags
+                        && request.resource.data.get('phase3Evaluated', false) == resource.data.get('phase3Evaluated', false)
+                       );
+    }
+
+    // PRIVATE TEAM DATA (Admin + Jury Only) - NO CONTESTANT ACCESS
+    match /private_team_data/{teamId} {
+        allow read: if isAdmin() || isJuryOrHelper();
+        allow write: if isAdmin() || isJuryOrHelper(); // Allow Juries to increment counts
+    }
+
+    match /evaluations/{evalId} {
+      allow read: if isAdmin() || isUserEmail(resource.data.juryEmail);
+      allow create: if "juryId" in request.resource.data
+                    && verifyJuryWithId(request.resource.data.juryId, request.resource.data.juryEmail, false)
+                    && isValidStandardEvaluation(request.resource.data.teamId, request.resource.data.round);
+      allow update: if isUserEmail(resource.data.juryEmail) || isAdmin();
+    }
+
+    match /extra_jury_evaluations/{evalId} {
+      allow read: if isAdmin() || isUserEmail(resource.data.juryEmail);
+      allow create: if "juryId" in request.resource.data
+                    && verifyJuryWithId(request.resource.data.juryId, request.resource.data.juryEmail, true)
+                    && isValidExtraEvaluation(request.resource.data.teamId);
+      allow update: if (isUserEmail(resource.data.juryEmail) && isExtraJury()) || isAdmin();
+    }
+
+    match /jury_notes/{noteId} {
+      allow read: if isAdmin() || isUserEmail(resource.data.juryEmail);
+      allow create: if isUserEmail(request.resource.data.juryEmail);
+      allow update, delete: if isUserEmail(resource.data.juryEmail) || isAdmin();
+    }
+
+    match /feedback/{feedbackId} {
+      allow create: if isAuthenticated();
+      allow read: if isAdmin();
+    }
+
+    match /notifications/{notifId} {
+      allow read: if isAuthenticated();
+      allow create: if isUserEmail(request.resource.data.createdBy) || isAdmin();
+    }
+
+    match /logs/{logId} {
+      allow create: if isAuthenticated();
+      allow read: if isAdmin();
+    }
+    match /checkins/{checkinId} {
+      allow create: if isAuthenticated();
+      allow read: if isAuthenticated();
+    }
+    match /help_requests/{requestId} {
+      allow create: if isAuthenticated();
+      allow read, update: if isAuthenticated();
+    }
+    match /arcade_scores/{gameId}/scores/{email} {
+      allow read: if isAuthenticated();
+      allow write: if isUserEmail(email);
+    }
+  }
+}

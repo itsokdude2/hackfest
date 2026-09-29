@@ -1,0 +1,5 @@
+{
+  "name": "Lumina Auth",
+  "description": "A visually captivating, glassmorphic Google Authentication interface using Firebase.",
+  "requestFramePermissions": []
+}
